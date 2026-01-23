@@ -1,11 +1,11 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from pymongo import MongoClient
+import os
+from dotenv import load_dotenv
 
-DATABASE_URL = "sqlite:///./milk.db"
+load_dotenv()   # 👈 REQUIRED
 
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
-)
+MONGO_URL = os.getenv("MONGO_URL")
 
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+client = MongoClient(MONGO_URL)
+db = client["milkdb"]
+milk_collection = db["milk_entries"]
