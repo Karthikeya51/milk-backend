@@ -1,15 +1,12 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from sqlalchemy import func
 from datetime import date
+from bson import ObjectId
+from collections import defaultdict
 import pandas as pd
 from fastapi.responses import FileResponse
 
-import models, schemas
-from database import engine, SessionLocal
-
-models.Base.metadata.create_all(bind=engine)
+from database import milk_collection
 
 app = FastAPI()
 
@@ -20,102 +17,98 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# CREATE
+# ---------------- CREATE ----------------
 @app.post("/milk-entry")
-def create_entry(entry: schemas.MilkEntryCreate, db: Session = Depends(get_db)):
-    amount = entry.qty * entry.rate_per_litre
-    db_entry = models.MilkEntry(**entry.dict(), amount=amount)
-    db.add(db_entry)
-    db.commit()
-    db.refresh(db_entry)
-    return db_entry
+def create_entry(entry: dict):
+    entry["amount"] = entry["qty"] * entry["rate_per_litre"]
+    milk_collection.insert_one(entry)
+    return {"message": "Entry added"}
 
-# READ ALL
+# ---------------- READ ALL ----------------
 @app.get("/milk-entry")
-def get_all(db: Session = Depends(get_db)):
-    return db.query(models.MilkEntry).order_by(models.MilkEntry.date.desc()).all()
+def get_all():
+    data = []
+    for e in milk_collection.find().sort("date", -1):
+        e["id"] = str(e["_id"])
+        del e["_id"]
+        data.append(e)
+    return data
 
-# READ BY DATE
+# ---------------- READ BY DATE ----------------
 @app.get("/milk-entry/by-date/{entry_date}")
-def by_date(entry_date: date, db: Session = Depends(get_db)):
-    return db.query(models.MilkEntry).filter(models.MilkEntry.date == entry_date).all()
+def by_date(entry_date: str):
+    data = []
+    for e in milk_collection.find({"date": entry_date}):
+        e["id"] = str(e["_id"])
+        del e["_id"]
+        data.append(e)
+    return data
 
-# UPDATE
+# ---------------- UPDATE ----------------
 @app.put("/milk-entry/{entry_id}")
-def update(entry_id: int, entry: schemas.MilkEntryCreate, db: Session = Depends(get_db)):
-    e = db.query(models.MilkEntry).filter(models.MilkEntry.id == entry_id).first()
-    if not e:
-        return {"error": "Not found"}
+def update(entry_id: str, entry: dict):
+    entry["amount"] = entry["qty"] * entry["rate_per_litre"]
+    milk_collection.update_one(
+        {"_id": ObjectId(entry_id)},
+        {"$set": entry}
+    )
+    return {"message": "Updated"}
 
-    for k, v in entry.dict().items():
-        setattr(e, k, v)
-    e.amount = entry.qty * entry.rate_per_litre
-    db.commit()
-    return e
-
-# DELETE
+# ---------------- DELETE ----------------
 @app.delete("/milk-entry/{entry_id}")
-def delete(entry_id: int, db: Session = Depends(get_db)):
-    e = db.query(models.MilkEntry).filter(models.MilkEntry.id == entry_id).first()
-    if not e:
-        return {"error": "Not found"}
-    db.delete(e)
-    db.commit()
+def delete(entry_id: str):
+    milk_collection.delete_one({"_id": ObjectId(entry_id)})
     return {"message": "Deleted"}
 
-# DAILY TOTAL
+# ---------------- DAILY TOTAL ----------------
 @app.get("/reports/daily-total/{entry_date}")
-def daily_total(entry_date: date, db: Session = Depends(get_db)):
-    r = db.query(
-        func.sum(models.MilkEntry.qty),
-        func.sum(models.MilkEntry.amount)
-    ).filter(models.MilkEntry.date == entry_date).first()
+def daily_total(entry_date: str):
+    total_qty = 0
+    total_amount = 0
+
+    for e in milk_collection.find({"date": entry_date}):
+        total_qty += e["qty"]
+        total_amount += e["amount"]
 
     return {
         "date": entry_date,
-        "total_qty": r[0] or 0,
-        "total_amount": r[1] or 0
+        "total_qty": total_qty,
+        "total_amount": total_amount
     }
 
-# MONTHLY REPORT
+# ---------------- MONTHLY REPORT ----------------
 @app.get("/reports/monthly/{year}/{month}")
-def monthly(year: int, month: int, db: Session = Depends(get_db)):
-    r = db.query(
-        func.sum(models.MilkEntry.qty),
-        func.sum(models.MilkEntry.amount)
-    ).filter(
-        func.strftime("%Y", models.MilkEntry.date) == str(year),
-        func.strftime("%m", models.MilkEntry.date) == f"{month:02d}"
-    ).first()
+def monthly(year: int, month: int):
+    total_qty = 0
+    total_amount = 0
+    prefix = f"{year}-{month:02d}"
+
+    for e in milk_collection.find({"date": {"$regex": f"^{prefix}"}}):
+        total_qty += e["qty"]
+        total_amount += e["amount"]
 
     return {
         "year": year,
         "month": month,
-        "total_qty": r[0] or 0,
-        "total_amount": r[1] or 0
+        "total_qty": total_qty,
+        "total_amount": total_amount
     }
 
-# EXCEL EXPORT
+# ---------------- EXCEL EXPORT ----------------
 @app.get("/reports/export-excel")
-def export_excel(db: Session = Depends(get_db)):
-    entries = db.query(models.MilkEntry).all()
-    data = [{
-        "Date": e.date,
-        "Shift": e.shift,
-        "Qty": e.qty,
-        "Fat": e.fat,
-        "SNF": e.snf,
-        "CLR": e.clr,
-        "Rate": e.rate_per_litre,
-        "Amount": e.amount
-    } for e in entries]
+def export_excel():
+    data = []
+    for e in milk_collection.find():
+        data.append({
+            "Date": e["date"],
+            "Shift": e["shift"],
+            "Qty": e["qty"],
+            "Fat": e["fat"],
+            "SNF": e["snf"],
+            "CLR": e["clr"],
+            "Rate": e["rate_per_litre"],
+            "Amount": e["amount"]
+        })
 
     df = pd.DataFrame(data)
     file = "milk_report.xlsx"
@@ -123,43 +116,32 @@ def export_excel(db: Session = Depends(get_db)):
 
     return FileResponse(file, filename=file)
 
+# ---------------- DAILY CHART ----------------
 @app.get("/charts/daily/{entry_date}")
-def daily_chart(entry_date: date, db: Session = Depends(get_db)):
-    data = (
-        db.query(
-            models.MilkEntry.shift,
-            func.sum(models.MilkEntry.qty).label("qty"),
-            func.sum(models.MilkEntry.amount).label("amount")
-        )
-        .filter(models.MilkEntry.date == entry_date)
-        .group_by(models.MilkEntry.shift)
-        .all()
-    )
+def daily_chart(entry_date: str):
+    result = defaultdict(lambda: {"qty": 0, "amount": 0})
+
+    for e in milk_collection.find({"date": entry_date}):
+        shift = e["shift"]
+        result[shift]["qty"] += e["qty"]
+        result[shift]["amount"] += e["amount"]
 
     return [
-        {"shift": d.shift, "qty": d.qty, "amount": d.amount}
-        for d in data
+        {"shift": k, "qty": v["qty"], "amount": v["amount"]}
+        for k, v in result.items()
     ]
 
+# ---------------- MONTHLY CHART ----------------
 @app.get("/charts/monthly/{year}/{month}")
-def monthly_chart(year: int, month: int, db: Session = Depends(get_db)):
-    data = (
-        db.query(
-            models.MilkEntry.date,
-            func.sum(models.MilkEntry.qty).label("qty"),
-            func.sum(models.MilkEntry.amount).label("amount")
-        )
-        .filter(
-            func.strftime("%Y", models.MilkEntry.date) == str(year),
-            func.strftime("%m", models.MilkEntry.date) == f"{month:02d}"
-        )
-        .group_by(models.MilkEntry.date)
-        .order_by(models.MilkEntry.date)
-        .all()
-    )
+def monthly_chart(year: int, month: int):
+    result = defaultdict(lambda: {"qty": 0, "amount": 0})
+    prefix = f"{year}-{month:02d}"
+
+    for e in milk_collection.find({"date": {"$regex": f"^{prefix}"}}):
+        result[e["date"]]["qty"] += e["qty"]
+        result[e["date"]]["amount"] += e["amount"]
 
     return [
-        {"date": d.date, "qty": d.qty, "amount": d.amount}
-        for d in data
+        {"date": k, "qty": v["qty"], "amount": v["amount"]}
+        for k, v in sorted(result.items())
     ]
-
