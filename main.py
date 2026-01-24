@@ -107,7 +107,8 @@ def export_excel():
             "SNF": e["snf"],
             "CLR": e["clr"],
             "Rate": e["rate_per_litre"],
-            "Amount": e["amount"]
+            "Amount": e["amount"],
+            "Note": e.get("note", "")
         })
 
     df = pd.DataFrame(data)
