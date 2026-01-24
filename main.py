@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI,Depends
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import date
 from bson import ObjectId
@@ -119,29 +119,66 @@ def export_excel():
 # ---------------- DAILY CHART ----------------
 @app.get("/charts/daily/{entry_date}")
 def daily_chart(entry_date: str):
-    result = defaultdict(lambda: {"qty": 0, "amount": 0})
-
-    for e in milk_collection.find({"date": entry_date}):
-        shift = e["shift"]
-        result[shift]["qty"] += e["qty"]
-        result[shift]["amount"] += e["amount"]
-
-    return [
-        {"shift": k, "qty": v["qty"], "amount": v["amount"]}
-        for k, v in result.items()
+    pipeline = [
+        {"$match": {"date": entry_date}},
+        {
+            "$group": {
+                "_id": "$shift",
+                "qty": {"$sum": "$qty"},
+                "amount": {"$sum": "$amount"},
+                "fat": {"$avg": "$fat"},
+                "snf": {"$avg": "$snf"},
+                "clr": {"$avg": "$clr"},
+                "rate_per_litre": {"$avg": "$rate_per_litre"},
+            }
+        }
     ]
+
+    result = []
+    for d in milk_collection.aggregate(pipeline):
+        result.append({
+            "shift": d["_id"],
+            "qty": round(d["qty"], 2),
+            "amount": round(d["amount"], 2),
+            "fat": round(d["fat"], 2),
+            "snf": round(d["snf"], 2),
+            "clr": round(d["clr"], 2),
+            "rate_per_litre": round(d["rate_per_litre"], 2),
+        })
+
+    return result
 
 # ---------------- MONTHLY CHART ----------------
 @app.get("/charts/monthly/{year}/{month}")
 def monthly_chart(year: int, month: int):
-    result = defaultdict(lambda: {"qty": 0, "amount": 0})
     prefix = f"{year}-{month:02d}"
 
-    for e in milk_collection.find({"date": {"$regex": f"^{prefix}"}}):
-        result[e["date"]]["qty"] += e["qty"]
-        result[e["date"]]["amount"] += e["amount"]
-
-    return [
-        {"date": k, "qty": v["qty"], "amount": v["amount"]}
-        for k, v in sorted(result.items())
+    pipeline = [
+        {"$match": {"date": {"$regex": f"^{prefix}"}}},
+        {
+            "$group": {
+                "_id": "$date",
+                "qty": {"$sum": "$qty"},
+                "amount": {"$sum": "$amount"},
+                "fat": {"$avg": "$fat"},
+                "snf": {"$avg": "$snf"},
+                "clr": {"$avg": "$clr"},
+                "rate_per_litre": {"$avg": "$rate_per_litre"},
+            }
+        },
+        {"$sort": {"_id": 1}}
     ]
+
+    result = []
+    for d in milk_collection.aggregate(pipeline):
+        result.append({
+            "date": d["_id"],
+            "qty": round(d["qty"], 2),
+            "amount": round(d["amount"], 2),
+            "fat": round(d["fat"], 2),
+            "snf": round(d["snf"], 2),
+            "clr": round(d["clr"], 2),
+            "rate_per_litre": round(d["rate_per_litre"], 2),
+        })
+
+    return result
