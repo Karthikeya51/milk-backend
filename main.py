@@ -1,10 +1,9 @@
-from fastapi import FastAPI,Depends
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import date
+from fastapi.responses import StreamingResponse
 from bson import ObjectId
-from collections import defaultdict
+from io import BytesIO
 import pandas as pd
-from fastapi.responses import FileResponse
 
 from database import milk_collection
 
@@ -20,7 +19,7 @@ app.add_middleware(
 # ---------------- CREATE ----------------
 @app.post("/milk-entry")
 def create_entry(entry: dict):
-    entry["amount"] = entry["qty"] * entry["rate_per_litre"]
+    entry["amount"] = round(entry["qty"] * entry["rate_per_litre"], 2)
     milk_collection.insert_one(entry)
     return {"message": "Entry added"}
 
@@ -47,7 +46,7 @@ def by_date(entry_date: str):
 # ---------------- UPDATE ----------------
 @app.put("/milk-entry/{entry_id}")
 def update(entry_id: str, entry: dict):
-    entry["amount"] = entry["qty"] * entry["rate_per_litre"]
+    entry["amount"] = round(entry["qty"] * entry["rate_per_litre"], 2)
     milk_collection.update_one(
         {"_id": ObjectId(entry_id)},
         {"$set": entry}
@@ -72,50 +71,9 @@ def daily_total(entry_date: str):
 
     return {
         "date": entry_date,
-        "total_qty": total_qty,
-        "total_amount": total_amount
+        "total_qty": round(total_qty, 2),
+        "total_amount": round(total_amount, 2)
     }
-
-# ---------------- MONTHLY REPORT ----------------
-@app.get("/reports/monthly/{year}/{month}")
-def monthly(year: int, month: int):
-    total_qty = 0
-    total_amount = 0
-    prefix = f"{year}-{month:02d}"
-
-    for e in milk_collection.find({"date": {"$regex": f"^{prefix}"}}):
-        total_qty += e["qty"]
-        total_amount += e["amount"]
-
-    return {
-        "year": year,
-        "month": month,
-        "total_qty": total_qty,
-        "total_amount": total_amount
-    }
-
-# ---------------- EXCEL EXPORT ----------------
-@app.get("/reports/export-excel")
-def export_excel():
-    data = []
-    for e in milk_collection.find():
-        data.append({
-            "Date": e["date"],
-            "Shift": e["shift"],
-            "Qty": e["qty"],
-            "Fat": e["fat"],
-            "SNF": e["snf"],
-            "CLR": e["clr"],
-            "Rate": e["rate_per_litre"],
-            "Amount": e["amount"],
-            "Note": e.get("note", "")
-        })
-
-    df = pd.DataFrame(data)
-    file = "milk_report.xlsx"
-    df.to_excel(file, index=False)
-
-    return FileResponse(file, filename=file)
 
 # ---------------- DAILY CHART ----------------
 @app.get("/charts/daily/{entry_date}")
@@ -135,9 +93,8 @@ def daily_chart(entry_date: str):
         }
     ]
 
-    result = []
-    for d in milk_collection.aggregate(pipeline):
-        result.append({
+    return [
+        {
             "shift": d["_id"],
             "qty": round(d["qty"], 2),
             "amount": round(d["amount"], 2),
@@ -145,17 +102,28 @@ def daily_chart(entry_date: str):
             "snf": round(d["snf"], 2),
             "clr": round(d["clr"], 2),
             "rate_per_litre": round(d["rate_per_litre"], 2),
-        })
+        }
+        for d in milk_collection.aggregate(pipeline)
+    ]
 
-    return result
-
-# ---------------- MONTHLY CHART ----------------
-@app.get("/charts/monthly/{year}/{month}")
-def monthly_chart(year: int, month: int):
-    prefix = f"{year}-{month:02d}"
-
+# ---------------- MONTHLY RANGE CHART ----------------
+@app.get("/charts/monthly-range")
+def monthly_chart_range(
+    from_date: str = Query(
+        ...,
+        examples={"from": {"value": "2026-01-01"}}
+    ),
+    to_date: str = Query(
+        ...,
+        examples={"to": {"value": "2026-01-31"}}
+    )
+):
     pipeline = [
-        {"$match": {"date": {"$regex": f"^{prefix}"}}},
+        {
+            "$match": {
+                "date": {"$gte": from_date, "$lte": to_date}
+            }
+        },
         {
             "$group": {
                 "_id": "$date",
@@ -170,9 +138,8 @@ def monthly_chart(year: int, month: int):
         {"$sort": {"_id": 1}}
     ]
 
-    result = []
-    for d in milk_collection.aggregate(pipeline):
-        result.append({
+    return [
+        {
             "date": d["_id"],
             "qty": round(d["qty"], 2),
             "amount": round(d["amount"], 2),
@@ -180,6 +147,45 @@ def monthly_chart(year: int, month: int):
             "snf": round(d["snf"], 2),
             "clr": round(d["clr"], 2),
             "rate_per_litre": round(d["rate_per_litre"], 2),
+        }
+        for d in milk_collection.aggregate(pipeline)
+    ]
+
+# ---------------- EXCEL EXPORT (STREAMING) ----------------
+@app.get("/reports/export-excel")
+def export_excel():
+    data = []
+    for e in milk_collection.find():
+        data.append({
+            "Date": e.get("date"),
+            "Shift": e.get("shift"),
+            "Quantity": round(e.get("qty", 0), 2),
+            "Fat": round(e.get("fat", 0), 2),
+            "SNF": round(e.get("snf", 0), 2),
+            "CLR": round(e.get("clr", 0), 2),
+            "Rate": round(e.get("rate_per_litre", 0), 2),
+            "Amount": round(e.get("amount", 0), 2),
+            "Note": e.get("note", "")
         })
 
-    return result
+    df = pd.DataFrame(data)
+
+    output = BytesIO()
+    df.to_excel(output, index=False, engine="openpyxl")
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=milk_report.xlsx"
+        }
+    )
+
+# ---------------- BULK DELETE ----------------
+@app.post("/milk-entry/bulk-delete")
+def bulk_delete(ids: list[str]):
+    milk_collection.delete_many({
+        "_id": {"$in": [ObjectId(i) for i in ids]}
+    })
+    return {"message": "Deleted"}
