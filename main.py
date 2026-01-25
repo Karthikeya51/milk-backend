@@ -20,7 +20,8 @@ app.add_middleware(
 # ---------------- CREATE ----------------
 @app.post("/milk-entry")
 def create_entry(entry: dict):
-    entry["amount"] = entry["qty"] * entry["rate_per_litre"]
+    entry["amount"] = round(entry["qty"] * entry["rate_per_litre"], 2)
+
     milk_collection.insert_one(entry)
     return {"message": "Entry added"}
 
@@ -150,12 +151,55 @@ def daily_chart(entry_date: str):
     return result
 
 # ---------------- MONTHLY CHART ----------------
-@app.get("/charts/monthly/{year}/{month}")
-def monthly_chart(year: int, month: int):
-    prefix = f"{year}-{month:02d}"
+# @app.get("/charts/monthly/{year}/{month}")
+# def monthly_chart(year: int, month: int):
+#     prefix = f"{year}-{month:02d}"
 
+#     pipeline = [
+#         {"$match": {"date": {"$regex": f"^{prefix}"}}},
+#         {
+#             "$group": {
+#                 "_id": "$date",
+#                 "qty": {"$sum": "$qty"},
+#                 "amount": {"$sum": "$amount"},
+#                 "fat": {"$avg": "$fat"},
+#                 "snf": {"$avg": "$snf"},
+#                 "clr": {"$avg": "$clr"},
+#                 "rate_per_litre": {"$avg": "$rate_per_litre"},
+#             }
+#         },
+#         {"$sort": {"_id": 1}}
+#     ]
+
+#     result = []
+#     for d in milk_collection.aggregate(pipeline):
+#         result.append({
+#             "date": d["_id"],
+#             "qty": round(d["qty"], 2),
+#             "amount": round(d["amount"], 2),
+#             "fat": round(d["fat"], 2),
+#             "snf": round(d["snf"], 2),
+#             "clr": round(d["clr"], 2),
+#             "rate_per_litre": round(d["rate_per_litre"], 2),
+#         })
+
+#     return result
+from fastapi import Query
+
+@app.get("/charts/monthly-range")
+def monthly_chart_range(
+    from_date: str = Query(..., example="2026-01-01"),
+    to_date: str = Query(..., example="2026-01-31")
+):
     pipeline = [
-        {"$match": {"date": {"$regex": f"^{prefix}"}}},
+        {
+            "$match": {
+                "date": {
+                    "$gte": from_date,
+                    "$lte": to_date
+                }
+            }
+        },
         {
             "$group": {
                 "_id": "$date",
@@ -183,3 +227,11 @@ def monthly_chart(year: int, month: int):
         })
 
     return result
+
+#delte bulk 
+@app.post("/milk-entry/bulk-delete")
+def bulk_delete(ids: list[str]):
+    milk_collection.delete_many({
+        "_id": {"$in": [ObjectId(i) for i in ids]}
+    })
+    return {"message": "Deleted"}
