@@ -152,10 +152,87 @@ def monthly_chart_range(
     ]
 
 # ---------------- EXCEL EXPORT (STREAMING) ----------------
-@app.get("/reports/export-excel")
-def export_excel():
+# @app.get("/reports/export-excel")
+# def export_excel():
+#     data = []
+#     for e in milk_collection.find():
+#         data.append({
+#             "Date": e.get("date"),
+#             "Shift": e.get("shift"),
+#             "Quantity": round(e.get("qty", 0), 2),
+#             "Fat": round(e.get("fat", 0), 2),
+#             "SNF": round(e.get("snf", 0), 2),
+#             "CLR": round(e.get("clr", 0), 2),
+#             "Rate": round(e.get("rate_per_litre", 0), 2),
+#             "Amount": round(e.get("amount", 0), 2),
+#             "Note": e.get("note", "")
+#         })
+
+#     df = pd.DataFrame(data)
+
+#     output = BytesIO()
+#     df.to_excel(output, index=False, engine="openpyxl")
+#     output.seek(0)
+
+#     return StreamingResponse(
+#         output,
+#         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#         headers={
+#             "Content-Disposition": "attachment; filename=milk_report.xlsx"
+#         }
+#     )
+
+
+# @app.get("/reports/export-excel/monthly")
+# def export_excel_monthly(
+#     year: int = Query(...),
+#     month: int = Query(...)
+# ):
+#     prefix = f"{year}-{month:02d}"
+#     data = []
+
+#     for e in milk_collection.find({"date": {"$regex": f"^{prefix}"}}):
+#         data.append({
+#             "Date": e.get("date"),
+#             "Shift": e.get("shift"),
+#             "Quantity": round(e.get("qty", 0), 2),
+#             "Fat": round(e.get("fat", 0), 2),
+#             "SNF": round(e.get("snf", 0), 2),
+#             "CLR": round(e.get("clr", 0), 2),
+#             "Rate": round(e.get("rate_per_litre", 0), 2),
+#             "Amount": round(e.get("amount", 0), 2),
+#             "Note": e.get("note", "")
+#         })
+
+#     if not data:
+#         return {"message": "No data for selected month"}
+
+#     df = pd.DataFrame(data)
+
+#     output = BytesIO()
+#     df.to_excel(output, index=False, engine="openpyxl")
+#     output.seek(0)
+
+#     filename = f"Milk_Report_{year}_{month:02d}.xlsx"
+
+#     return StreamingResponse(
+#         output,
+#         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#         headers={
+#             "Content-Disposition": f"attachment; filename={filename}"
+#         }
+#     )
+
+@app.get("/reports/export-excel-range")
+def export_excel_range(
+    from_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    to_date: str = Query(..., description="End date YYYY-MM-DD"),
+):
     data = []
-    for e in milk_collection.find():
+
+    for e in milk_collection.find({
+        "date": {"$gte": from_date, "$lte": to_date}
+    }).sort("date", 1):
         data.append({
             "Date": e.get("date"),
             "Shift": e.get("shift"),
@@ -174,11 +251,13 @@ def export_excel():
     df.to_excel(output, index=False, engine="openpyxl")
     output.seek(0)
 
+    filename = f"milk_report_{from_date}_to_{to_date}.xlsx"
+
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": "attachment; filename=milk_report.xlsx"
+            "Content-Disposition": f"attachment; filename={filename}"
         }
     )
 
@@ -189,3 +268,72 @@ def bulk_delete(ids: list[str]):
         "_id": {"$in": [ObjectId(i) for i in ids]}
     })
     return {"message": "Deleted"}
+
+
+# range export excel on chart page
+
+@app.get("/milk-entry/monthly")
+def get_monthly_entries(
+    year: int = Query(..., example=2026),
+    month: int = Query(..., example=1)
+):
+    prefix = f"{year}-{month:02d}"
+    data = []
+
+    for e in milk_collection.find(
+        {"date": {"$regex": f"^{prefix}"}}
+    ).sort("date", 1):
+        e["id"] = str(e["_id"])
+        del e["_id"]
+
+        e["qty"] = round(e.get("qty", 0), 2)
+        e["fat"] = round(e.get("fat", 0), 2)
+        e["snf"] = round(e.get("snf", 0), 2)
+        e["clr"] = round(e.get("clr", 0), 2)
+        e["rate_per_litre"] = round(e.get("rate_per_litre", 0), 2)
+        e["amount"] = round(e.get("amount", 0), 2)
+
+        data.append(e)
+
+    return data   # ✅ ARRAY ONLY
+
+
+# montly export
+@app.get("/reports/export-excel-monthly")
+def export_excel_monthly(
+    year: int = Query(..., example=2026),
+    month: int = Query(..., example=1)
+):
+    prefix = f"{year}-{month:02d}"
+    data = []
+
+    for e in milk_collection.find(
+        {"date": {"$regex": f"^{prefix}"}}
+    ).sort("date", 1):
+        data.append({
+            "Date": e.get("date"),
+            "Shift": e.get("shift"),
+            "Quantity": round(e.get("qty", 0), 2),
+            "Fat": round(e.get("fat", 0), 2),
+            "SNF": round(e.get("snf", 0), 2),
+            "CLR": round(e.get("clr", 0), 2),
+            "Rate": round(e.get("rate_per_litre", 0), 2),
+            "Amount": round(e.get("amount", 0), 2),
+            "Note": e.get("note", "")
+        })
+
+    df = pd.DataFrame(data)
+
+    output = BytesIO()
+    df.to_excel(output, index=False, engine="openpyxl")
+    output.seek(0)
+
+    filename = f"milk_report_{year}_{month:02d}.xlsx"
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
